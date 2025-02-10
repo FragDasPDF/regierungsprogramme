@@ -18,6 +18,8 @@ numpy = ">=1.25.0"
 sentence-transformers = "^2.5.1"
 torch = ">=2.0.0"
 einops = "^0.8.0"
+hnswlib = "^0.7.0"
+pandas = "^2.2.3"
 
 [tool.poetry.group.dev.dependencies]
 black = "^23.0.0"

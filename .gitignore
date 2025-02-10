@@ -36,3 +36,6 @@ ENV/
 # Project specific
 *.pdf
 comparison_report.html
+data/old/**
+data/embeddings/**
+data/.DS_Store
