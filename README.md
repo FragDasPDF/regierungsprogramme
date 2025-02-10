@@ -1,16 +1,25 @@
-# PDF Chapter Comparator  
+# Vergleich von Verhandlungsprotokollen politischer Parteien
 
-A tool to compare PDF chapters using Azure OpenAI embeddings and LLM verification.
+von dima rubanov & matthias neumayer
+Dieses Repository enthält ein Python-Skript zur automatisierten Analyse und zum Vergleich von Verhandlungsprotokollen politischer Parteien. Derzeit werden die Protokolle von **SPÖ–ÖVP–NEOS** sowie **ÖVP–FPÖ** miteinander verglichen.  
 
+Das Skript nutzt **Natural Language Processing (NLP)** und **Sentence Embeddings**, um semantisch ähnliche Passagen zwischen den Dokumenten zu identifizieren. Die Ergebnisse werden in einem HTML-Report visualisiert.
 
-## ✨ Features
-- Extracts chapters from PDFs
-- Finds semantically similar sentences using OpenAI embeddings
-- Outputs a visualized HTML report with page references
+## Features
 
-## 🏆 Sponsored by [FragDasPDF.de](https://www.fragdaspdf.de)
-This project is proudly sponsored by **FragDasPDF**, an AI-powered tool that allows users to chat with PDFs, summarize content, and extract key information effortlessly.
+- **Automatische Textextraktion** aus PDF-Dokumenten  
+- **Semantischer Satzvergleich** mittels Embedding-Modell (`nomic-ai/nomic-embed-text-v1`)  
+- **Ähnlichkeitsanalyse** mit `cosine similarity`  
+- **HTML-Report-Generierung** zur übersichtlichen Darstellung der Ergebnisse 
 
-🚀 **Try it now**: [FragDasPDF.de](https://www.fragdaspdf.de)
+## 🏆 Gesponsert von [FragDasPDF.de](https://www.fragdaspdf.de)  
+
+Dieses Projekt wird stolz von **FragDasPDF** unterstützt – einem KI-gestützten Tool, mit dem Nutzer mühelos PDFs durchsuchen, Inhalte zusammenfassen und wichtige Informationen extrahieren können.  
+
+🚀 **Jetzt ausprobieren**: [FragDasPDF.de](https://www.fragdaspdf.de)  
 
 ---
+
+
+
+
