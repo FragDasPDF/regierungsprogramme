@@ -31,7 +31,9 @@ CHUNK_SIZE = 5  # Number of pages to process in each chunk
 ########################################
 # Similarity Configuration
 ########################################
-SENTENCE_SIMILARITY_THRESHOLD = 0.5  # Changed from 0.85 to 0.5
+SENTENCE_SIMILARITY_THRESHOLD = (
+    0.85  # Default similarity threshold for sentence matching
+)
 
 # Initialize the embedding model
 embedding_model = SentenceTransformer(
@@ -50,15 +52,9 @@ def extract_content_from_pdf(pdf_path, vectorstore=None):
             stored_content = vectorstore.get_sections_for_pdf(pdf_path)
             if stored_content:
                 logging.info(f"Found stored content for {pdf_path}")
-                # Transform stored content into expected format
-                return {
-                    "text": stored_content.get("text", ""),
-                    "pages": stored_content.get("pages", [1]),
-                    "pdf_path": stored_content.get("pdf_path", pdf_path),
-                    "embeddings": stored_content.get("embeddings", None)
-                }
+                return stored_content
 
-        content = {"sections": [], "pdf_path": pdf_path}
+        content = {"text": "", "pages": [], "pdf_path": pdf_path}
 
         with pdfplumber.open(pdf_path) as pdf:
             total_pages = len(pdf.pages)
@@ -73,41 +69,21 @@ def extract_content_from_pdf(pdf_path, vectorstore=None):
                         logging.warning(f"Empty text on page {page_num}")
                         continue
 
-                    # Store each page as a separate section
-                    content["sections"].append(
-                        {"text": text, "page": page_num, "embedding": None}
-                    )
+                    content["text"] += text + "\n"
+                    content["pages"].append(page_num)
 
                 except Exception as e:
                     logging.error(f"Error processing page {page_num}: {str(e)}")
                     continue
 
-        # Compute embeddings for each section
-        for section in tqdm(content["sections"], desc="Processing sections"):
-            if section["text"]:
-                try:
-                    # Process in chunks to avoid memory issues
-                    chunk_size = 1000  # Characters per chunk
-                    text_chunks = [
-                        section["text"][i : i + chunk_size]
-                        for i in range(0, len(section["text"]), chunk_size)
-                    ]
+        # Compute embedding for the entire content
+        if content["text"]:
+            embedding = embedding_model.encode(content["text"])
+            content["embeddings"] = np.array(embedding).reshape(1, -1)[0]
 
-                    # Compute embedding for the section
-                    embeddings = [
-                        embedding_model.encode(chunk) for chunk in text_chunks
-                    ]
-                    section["embedding"] = np.mean(embeddings, axis=0)
-
-                    # Store in vectorstore if available
-                    if vectorstore:
-                        vectorstore.store_sections_for_pdf(
-                            pdf_path, content["sections"]
-                        )
-
-                except Exception as e:
-                    logging.error(f"Error processing section: {str(e)}")
-                    continue
+            # Store in vectorstore if available
+            if vectorstore:
+                vectorstore.store_sections_for_pdf(pdf_path, [content])
 
         return content
 
@@ -145,125 +121,104 @@ def compute_embeddings(sentences):
     return embeddings
 
 
-def find_page_number(sentence, sections):
-    """Find the page number for a sentence from section data"""
-    for section in sections:
-        if sentence in section["text"]:
-            return section["page"]
-    return sections[0]["page"] if sections else 1
+def find_page_number(sentence, content, pages):
+    """Helper function to find the page number for a sentence"""
+    sentence_pos = content.find(sentence)
+    if sentence_pos == -1:
+        return pages[0]  # Default to first page if not found
+
+    content_before = content[:sentence_pos]
+    newline_count = content_before.count("\n")
+    page_index = min(newline_count // 40, len(pages) - 1)  # Assuming ~40 lines per page
+    return pages[page_index]
 
 
 def compare_documents(doc1_content, doc2_content, threshold=0.85, vectorstore=None):
     """Compare sentences between two documents"""
     try:
-        # Validate input structure based on VectorStore format
-        if not isinstance(doc1_content, dict) or "text" not in doc1_content:
-            logging.error("Invalid document 1 content structure")
-            return []
-
-        if not isinstance(doc2_content, dict) or "text" not in doc2_content:
-            logging.error("Invalid document 2 content structure")
-            return []
-
-        # Extract document paths
-        doc1_path = doc1_content.get("pdf_path", "")
-        doc2_path = doc2_content.get("pdf_path", "")
-
-        # Extract text content and tokenize into sentences
+        # Extract sentences with their page numbers
         sentences1 = [
-            (
-                sent,
-                doc1_content.get("pages", [1])[0],
-            )  # Default to page 1 if not specified
+            (sent, find_page_number(sent, doc1_content["text"], doc1_content["pages"]))
             for sent in sent_tokenize(doc1_content["text"].strip())
             if sent.strip()
         ]
         sentences2 = [
-            (
-                sent,
-                doc2_content.get("pages", [1])[0],
-            )  # Default to page 1 if not specified
+            (sent, find_page_number(sent, doc2_content["text"], doc2_content["pages"]))
             for sent in sent_tokenize(doc2_content["text"].strip())
             if sent.strip()
         ]
 
         if not sentences1 or not sentences2:
-            logging.warning("No sentences found in one or both documents")
             return []
 
-        # Process embeddings for each document
-        def process_embeddings(sentences, pdf_path):
-            embeddings = []
-            for sent, page in tqdm(
-                sentences,
-                desc=f"Processing embeddings for {os.path.basename(pdf_path)}",
-            ):
-                try:
-                    # Try to get stored embedding
-                    if vectorstore:
-                        stored_data = vectorstore.get_sentence_embedding(sent, pdf_path)
-                        if (
-                            stored_data is not None
-                            and isinstance(stored_data, dict)
-                            and "embedding" in stored_data
-                        ):
-                            embeddings.append(np.array(stored_data["embedding"]))
-                            continue
+        # Get embeddings for all sentences
+        embeddings1 = []
+        embeddings2 = []
+        doc1_name = os.path.basename(doc1_content["pdf_path"])
+        doc2_name = os.path.basename(doc2_content["pdf_path"])
 
-                    # If no stored embedding found, compute new one
-                    emb = embedding_model.encode(sent)
-                    embeddings.append(emb)
-
-                    # Store the new embedding if vectorstore is available
-                    if vectorstore:
-                        vectorstore.store_sentence_embedding(
-                            sent,
-                            pdf_path,
-                            emb.tolist(),
-                            page,
-                            os.path.basename(pdf_path),
-                        )
-                except Exception as e:
-                    logging.error(f"Error processing sentence embedding: {e}")
-                    embeddings.append(np.zeros(384))
-                    continue
-
-            return np.array(embeddings)
-
-        # Get embeddings as numpy arrays
-        embeddings1 = process_embeddings(sentences1, doc1_path)
-        embeddings2 = process_embeddings(sentences2, doc2_path)
-
-        # Compute similarity matrix using vectorized operations
-        similarity_matrix = cosine_similarity(embeddings1, embeddings2)
-        above_threshold = np.argwhere(similarity_matrix >= threshold)
-
-        # Collect matches from matrix indices
-        doc1_name = os.path.basename(doc1_path)
-        doc2_name = os.path.basename(doc2_path)
-        matches = []
-        for i, j in above_threshold:
-            sent1, page1 = sentences1[i]
-            sent2, page2 = sentences2[j]
-            similarity = float(
-                similarity_matrix[i, j]
-            )  # Convert to native Python float
-
-            matches.append(
-                {
-                    "doc1_sentence": sent1,
-                    "doc2_sentence": sent2,
-                    "similarity": similarity,
-                    "doc1_page": page1,
-                    "doc2_page": page2,
-                    "doc1_name": doc1_name,
-                    "doc2_name": doc2_name,
-                }
+        # Process doc1 sentences
+        for sent, page in sentences1:
+            # Try to get stored embedding
+            stored_data = (
+                vectorstore.get_sentence_embedding(sent, doc1_content["pdf_path"])
+                if vectorstore
+                else None
             )
 
-        # Cache the results
-        if vectorstore:
-            vectorstore.store_document_matches(doc1_path, doc2_path, threshold, matches)
+            if stored_data is not None:
+                emb = np.array(stored_data["embedding"])
+                embeddings1.append(emb)
+            else:
+                emb = embedding_model.encode(sent)
+                embeddings1.append(emb)
+                if vectorstore:
+                    vectorstore.store_sentence_embedding(
+                        sent, doc1_content["pdf_path"], emb, page, doc1_name
+                    )
+
+        # Process doc2 sentences
+        for sent, page in sentences2:
+            # Try to get stored embedding
+            stored_data = (
+                vectorstore.get_sentence_embedding(sent, doc2_content["pdf_path"])
+                if vectorstore
+                else None
+            )
+
+            if stored_data is not None:
+                emb = np.array(stored_data["embedding"])
+                embeddings2.append(emb)
+            else:
+                emb = embedding_model.encode(sent)
+                embeddings2.append(emb)
+                if vectorstore:
+                    vectorstore.store_sentence_embedding(
+                        sent, doc2_content["pdf_path"], emb, page, doc2_name
+                    )
+
+        # Compare sentences
+        matches = []
+        for i, ((sent1, page1), emb1) in enumerate(zip(sentences1, embeddings1)):
+            for j, ((sent2, page2), emb2) in enumerate(zip(sentences2, embeddings2)):
+                # Ensure embeddings are numpy arrays and properly shaped
+                emb1_reshaped = np.array(emb1).reshape(1, -1)
+                emb2_reshaped = np.array(emb2).reshape(1, -1)
+
+                similarity = cosine_similarity(emb1_reshaped, emb2_reshaped)[0][0]
+
+                if similarity >= threshold:
+                    matches.append(
+                        {
+                            "doc1_sentence": sent1,
+                            "doc2_sentence": sent2,
+                            "similarity": similarity,
+                            "doc1_page": page1,
+                            "doc2_page": page2,
+                            "doc1_name": doc1_name,
+                            "doc2_name": doc2_name,
+                        }
+                    )
 
         return matches
 

@@ -1,172 +1,195 @@
 import html
 import logging
-import csv
-import pandas as pd
 from jinja2 import Template
 from pathlib import Path
-import argparse
 
 
-def generate_csv_report(data, output_path):
-    """Generate CSV file with comparison results"""
-    csv_path = Path(output_path).with_suffix(".csv")
-
-    # Filter out short sentences
-    filtered_matches = [
-        match
-        for match in data.get("similar_sentences", [])
-        if len(match.get("doc1_sentence", "").strip()) >= 15
-        and len(match.get("doc2_sentence", "").strip()) >= 15
-    ]
-
-    # Prepare data for CSV
-    csv_data = []
-    for match in filtered_matches:
-        csv_data.append(
-            {
-                "similarity": match.get("similarity", 0),
-                "doc1_name": match.get("doc1_name", ""),
-                "doc1_page": match.get("doc1_page", ""),
-                "doc1_sentence": match.get("doc1_sentence", ""),
-                "doc2_name": match.get("doc2_name", ""),
-                "doc2_page": match.get("doc2_page", ""),
-                "doc2_sentence": match.get("doc2_sentence", ""),
-            }
-        )
-
-    # Write to CSV
-    if csv_data:
-        with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=csv_data[0].keys())
-            writer.writeheader()
-            writer.writerows(csv_data)
-
-    return csv_path
-
-
-def generate_html_from_csv(csv_path, output_path):
-    """Generate HTML report directly from a CSV file"""
-    try:
-        # Read the CSV file
-        df = pd.read_csv(csv_path)
-
-        # Ensure 'similarity' is a float
-        if "similarity" not in df.columns:
-            raise ValueError("CSV file does not contain 'similarity' column")
-
-        df["similarity"] = pd.to_numeric(df["similarity"], errors="coerce").fillna(0)
-
-        # Calculate statistics
-        stats = {
-            "total_matches": len(df),
-            "above_95": len(df[df["similarity"] >= 0.95]),
-            "above_90": len(df[df["similarity"] >= 0.90]),
-            "above_85": len(df[df["similarity"] >= 0.85]),
-        }
-
-        # Create the data structure
-        data = {
-            "doc1": {"path": "From CSV"},
-            "doc2": {"path": "From CSV"},
-            "similar_sentences": df.to_dict("records"),
-            "stats": stats,
-        }
-
-        # Generate the HTML report
-        generate_html_report(data, output_path)
-        logging.info(f"Successfully generated HTML report at {output_path}")
-
-    except Exception as e:
-        logging.error(f"Error generating HTML from CSV: {str(e)}")
-        raise
+def create_match_card(match):
+    """Create HTML for a single match card with proper escaping"""
+    return f"""
+    <div class="match-card" data-similarity="{match['similarity']}">
+        <div class="similarity-bar">
+            <div class="similarity-fill" style="width: {match['similarity'] * 100}%"></div>
+        </div>
+        <p><strong>Similarity:</strong> {match['similarity']:.2f}</p>
+        <div class="document-info">
+            <div class="doc1-info">
+                <strong>Document 1:</strong> {html.escape(match['doc1_name'])} (Page {match['doc1_page']})<br>
+                <div class="sentence">{html.escape(match['doc1_sentence'])}</div>
+            </div>
+            <div class="doc2-info">
+                <strong>Document 2:</strong> {html.escape(match['doc2_name'])} (Page {match['doc2_page']})<br>
+                <div class="sentence">{html.escape(match['doc2_sentence'])}</div>
+            </div>
+        </div>
+    </div>
+    """
 
 
 def generate_html_report(data, output_path):
     """Generate interactive HTML report with comparison results"""
-    matches = data.get("similar_sentences", [])
+    # Create templates directory if it doesn't exist
+    template_dir = Path(__file__).parent / "templates"
+    template_dir.mkdir(exist_ok=True)
 
-    df = pd.DataFrame(matches) if matches else pd.DataFrame(columns=["similarity"])
-    df["similarity"] = pd.to_numeric(df.get("similarity", 0), errors="coerce").fillna(0)
-
-    stats = data.get(
-        "stats",
-        {
-            "total_matches": len(df),
-            "above_95": len(df[df["similarity"] >= 0.95]),
-            "above_90": len(df[df["similarity"] >= 0.90]),
-            "above_85": len(df[df["similarity"] >= 0.85]),
-        },
-    )
-
-    template_content = """
-    <html>
-    <head>
-        <title>Document Comparison Report</title>
-        <style>
-            body { font-family: Arial, sans-serif; max-width: 1200px; margin: auto; }
-            .match-card { padding: 15px; background: #f9f9f9; margin: 10px 0; border-radius: 5px; }
-            .stats { margin: 20px 0; }
-            .stats table { width: 100%; border-collapse: collapse; }
-            .stats th, .stats td { padding: 10px; border-bottom: 1px solid #ddd; text-align: left; }
-            .similarity-bar { background: #ddd; height: 6px; border-radius: 3px; margin-top: 5px; }
-            .similarity-fill { height: 100%; background: #4CAF50; border-radius: 3px; }
-        </style>
-    </head>
-    <body>
-        <h1>Document Comparison Report</h1>
-        
-        <div class="stats">
-            <h3>Comparison Statistics</h3>
-            <table>
-                <tr><th>Threshold</th><th>Matches</th><th>Percentage</th></tr>
-                {% for key, val in stats.items() if key != "total_matches" %}
-                <tr>
-                    <td>≥ {{ key.split("_")[1] }}% similarity</td>
-                    <td>{{ val }}</td>
-                    <td>{{ "%.2f"|format(val / stats.total_matches * 100 if stats.total_matches else 0) }}%</td>
-                </tr>
-                {% endfor %}
-            </table>
-        </div>
-
-        <h2>Similar Sentences ({{ matches|length }})</h2>
-        <div>
-            {% for match in matches %}
-            <div class="match-card">
-                <p><strong>Similarity:</strong> {{ "%.2f"|format(match.similarity) }}</p>
-                <div class="similarity-bar">
-                    <div class="similarity-fill" style="width: {{ match.similarity * 100 }}%"></div>
-                </div>
-                <p><strong>Document 1:</strong> {{ match.doc1_name }} (Page {{ match.doc1_page }})</p>
-                <p>{{ match.doc1_sentence }}</p>
-                <p><strong>Document 2:</strong> {{ match.doc2_name }} (Page {{ match.doc2_page }})</p>
-                <p>{{ match.doc2_sentence }}</p>
+    # Create template file if it doesn't exist
+    template_path = template_dir / "report_template.html"
+    if not template_path.exists():
+        template_content = """
+        <html>
+        <head>
+            <title>Document Comparison Report</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    max-width: 1200px;
+                    margin: 0 auto;
+                    padding: 20px;
+                    background-color: #f5f5f5;
+                }
+                .slider-container { 
+                    margin: 20px 0;
+                    padding: 15px;
+                    background: white;
+                    border-radius: 5px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }
+                .match-card { 
+                    background: white;
+                    border: 1px solid #ddd;
+                    padding: 20px;
+                    margin: 15px 0;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }
+                .similarity-bar {
+                    height: 6px;
+                    background: #eee;
+                    margin: 10px 0;
+                    border-radius: 3px;
+                }
+                .similarity-fill {
+                    height: 100%;
+                    background: linear-gradient(90deg, #4CAF50, #45a049);
+                    border-radius: 3px;
+                    transition: width 0.3s ease;
+                }
+                .document-info {
+                    display: grid;
+                    grid-template-columns: 1fr 1fr;
+                    gap: 20px;
+                    margin-top: 15px;
+                }
+                .doc1-info, .doc2-info {
+                    padding: 15px;
+                    background: #f9f9f9;
+                    border-radius: 5px;
+                }
+                .sentence {
+                    margin-top: 10px;
+                    line-height: 1.5;
+                }
+                h1, h2 {
+                    color: #333;
+                }
+                #threshold {
+                    width: 200px;
+                    margin: 0 10px;
+                }
+                .stats {
+                    background: white;
+                    padding: 15px;
+                    border-radius: 5px;
+                    margin: 20px 0;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }
+                .footer {
+                    margin-top: 40px;
+                    padding: 20px;
+                    background: white;
+                    border-radius: 5px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    text-align: center;
+                    font-size: 0.9em;
+                    color: #666;
+                }
+                .footer a {
+                    color: #4CAF50;
+                    text-decoration: none;
+                    font-weight: bold;
+                }
+                .footer a:hover {
+                    text-decoration: underline;
+                }
+                .footer-logo {
+                    margin-bottom: 10px;
+                    font-weight: bold;
+                    font-size: 1.1em;
+                }
+            </style>
+        </head>
+        <body>
+            <h1>Document Comparison Report</h1>
+            
+            <div class="stats">
+                <h3>Documents Compared:</h3>
+                <p>Document 1: {{ data.doc1.path.split('/')[-1] }}</p>
+                <p>Document 2: {{ data.doc2.path.split('/')[-1] }}</p>
+                <p>Total Similar Sentences Found: {{ data.similar_sentences|length }}</p>
             </div>
-            {% endfor %}
-        </div>
 
-        <p>Generated by <a href="https://fragdaspdf.de" target="_blank">FragDasPDF</a></p>
-    </body>
-    </html>
-    """
+            <div class="slider-container">
+                <label>Similarity Threshold: 
+                    <input type="range" id="threshold" min="0" max="1" step="0.05" value="0.85"
+                           oninput="updateThreshold(this.value)">
+                    <span id="thresholdValue">0.85</span>
+                </label>
+            </div>
 
-    template = Template(template_content)
-    rendered_html = template.render(stats=stats, matches=matches)
+            <h2>Similar Sentences ({{ data.similar_sentences|length }})</h2>
+            <div id="matchesContainer">
+                {% for match in data.similar_sentences %}
+                    {{ create_match_card(match) }}
+                {% endfor %}
+            </div>
 
-    Path(output_path).write_text(rendered_html, encoding="utf-8")
+            <div class="footer">
+                <div class="footer-logo">🚀 Powered by FragDasPDF</div>
+                <p>
+                    Try our AI-powered PDF analysis tool at <a href="https://fragdaspdf.de" target="_blank">FragDasPDF.de</a><br>
+                    View source code on <a href="https://github.com/FragDasPDF/regierungsprogramme" target="_blank">GitHub</a>
+                </p>
+            </div>
 
+            <script>
+                function updateThreshold(value) {
+                    document.getElementById('thresholdValue').textContent = value;
+                    const matches = document.querySelectorAll('.match-card');
+                    matches.forEach(match => {
+                        const matchScore = parseFloat(match.dataset.similarity);
+                        match.style.display = matchScore >= parseFloat(value) ? 'block' : 'none';
+                    });
+                }
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate HTML report from CSV")
-    parser.add_argument("csv_path", help="Path to the input CSV file")
-    parser.add_argument(
-        "-o", "--output", help="Output HTML file", default="report.html"
-    )
-    args = parser.parse_args()
+                // Sort matches by similarity on load
+                document.addEventListener('DOMContentLoaded', function() {
+                    const container = document.getElementById('matchesContainer');
+                    const matches = Array.from(container.children);
+                    matches.sort((a, b) => {
+                        return parseFloat(b.dataset.similarity) - parseFloat(a.dataset.similarity);
+                    });
+                    matches.forEach(match => container.appendChild(match));
+                });
+            </script>
+        </body>
+        </html>
+        """
+        template_path.write_text(template_content)
 
-    try:
-        generate_html_from_csv(args.csv_path, args.output)
-        print(f"Successfully generated HTML report: {args.output}")
-    except Exception as e:
-        print(f"Error: {e}")
-        exit(1)
+    # Load and render template
+    template = Template(template_path.read_text())
+    rendered = template.render(data=data, create_match_card=create_match_card)
+
+    # Write output file
+    output_path = Path(output_path)
+    output_path.write_text(rendered, encoding="utf-8")

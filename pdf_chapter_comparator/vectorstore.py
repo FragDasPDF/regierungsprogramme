@@ -6,7 +6,6 @@ import hnswlib
 from typing import List, Dict, Any, Optional
 import logging
 from nltk import sent_tokenize
-import sqlite3
 
 
 class VectorStore:
@@ -16,7 +15,6 @@ class VectorStore:
         index_path="data/embeddings/vectorstore.bin",
         meta_path="data/embeddings/metadata.json",
         embedding_dimension=768,
-        db_path="data/embeddings/vectorstore.db",
     ):
         self.embedding_model = embedding_model
         self.index_path = index_path
@@ -26,10 +24,6 @@ class VectorStore:
         self.dimension = 768  # Hardcode to 768
         self.current_size = 0
         self.max_elements = 100000  # Adjust based on expected data size
-
-        # Initialize SQLite connection
-        self.conn = sqlite3.connect(db_path)
-        self._init_db()
 
         # Create directories if needed
         os.makedirs(os.path.dirname(index_path), exist_ok=True)
@@ -284,45 +278,3 @@ class VectorStore:
             if entry["type"] == "comparison"
             and entry["data"]["matches"][0]["similarity"] >= min_similarity
         ]
-
-    def get_document_matches(self, doc1_path, doc2_path, threshold):
-        """Retrieve cached matches between two documents"""
-        query = """
-            SELECT matches FROM document_matches 
-            WHERE (doc1_path = ? AND doc2_path = ? OR doc1_path = ? AND doc2_path = ?)
-            AND threshold = ?
-            ORDER BY timestamp DESC 
-            LIMIT 1
-        """
-        params = (doc1_path, doc2_path, doc2_path, doc1_path, threshold)
-        result = self.conn.execute(query, params).fetchone()
-        return json.loads(result[0]) if result else None
-
-    def store_document_matches(self, doc1_path, doc2_path, threshold, matches):
-        """Store matches between two documents"""
-        query = """
-            INSERT INTO document_matches 
-            (doc1_path, doc2_path, threshold, matches, timestamp)
-            VALUES (?, ?, ?, ?, datetime('now'))
-        """
-        matches_json = json.dumps(matches)
-        params = (doc1_path, doc2_path, threshold, matches_json)
-        self.conn.execute(query, params)
-        self.conn.commit()
-
-    def _init_db(self):
-        """Initialize database tables"""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS document_matches (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                doc1_path TEXT NOT NULL,
-                doc2_path TEXT NOT NULL,
-                threshold REAL NOT NULL,
-                matches TEXT NOT NULL,
-                timestamp DATETIME NOT NULL
-            )
-        """
-        )
-        self.conn.commit()
