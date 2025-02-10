@@ -134,7 +134,7 @@ def find_page_number(sentence, content, pages):
 
 
 def compare_documents(doc1_content, doc2_content, threshold=0.85, vectorstore=None):
-    """Compare sentences between two documents"""
+    """Compare sentences between two documents using batched processing"""
     try:
         # Extract sentences with their page numbers
         sentences1 = [
@@ -151,74 +151,91 @@ def compare_documents(doc1_content, doc2_content, threshold=0.85, vectorstore=No
         if not sentences1 or not sentences2:
             return []
 
-        # Get embeddings for all sentences
-        embeddings1 = []
-        embeddings2 = []
         doc1_name = os.path.basename(doc1_content["pdf_path"])
         doc2_name = os.path.basename(doc2_content["pdf_path"])
 
-        # Process doc1 sentences
-        for sent, page in sentences1:
-            # Try to get stored embedding
-            stored_data = (
-                vectorstore.get_sentence_embedding(sent, doc1_content["pdf_path"])
-                if vectorstore
-                else None
-            )
+        # Process sentences in batches
+        BATCH_SIZE = 32
+        embeddings1 = []
+        embeddings2 = []
 
-            if stored_data is not None:
-                emb = np.array(stored_data["embedding"])
-                embeddings1.append(emb)
-            else:
-                emb = embedding_model.encode(sent)
-                embeddings1.append(emb)
-                if vectorstore:
-                    vectorstore.store_sentence_embedding(
-                        sent, doc1_content["pdf_path"], emb, page, doc1_name
-                    )
+        # Process doc1 sentences in batches
+        for i in range(0, len(sentences1), BATCH_SIZE):
+            batch = sentences1[i : i + BATCH_SIZE]
+            batch_embeddings = []
 
-        # Process doc2 sentences
-        for sent, page in sentences2:
-            # Try to get stored embedding
-            stored_data = (
-                vectorstore.get_sentence_embedding(sent, doc2_content["pdf_path"])
-                if vectorstore
-                else None
-            )
+            for sent, page in batch:
+                stored_data = (
+                    vectorstore.get_sentence_embedding(sent, doc1_content["pdf_path"])
+                    if vectorstore
+                    else None
+                )
 
-            if stored_data is not None:
-                emb = np.array(stored_data["embedding"])
-                embeddings2.append(emb)
-            else:
-                emb = embedding_model.encode(sent)
-                embeddings2.append(emb)
-                if vectorstore:
-                    vectorstore.store_sentence_embedding(
-                        sent, doc2_content["pdf_path"], emb, page, doc2_name
-                    )
+                if stored_data is not None:
+                    emb = np.array(stored_data["embedding"])
+                else:
+                    emb = embedding_model.encode(sent)
+                    if vectorstore:
+                        vectorstore.store_sentence_embedding(
+                            sent, doc1_content["pdf_path"], emb, page, doc1_name
+                        )
+                batch_embeddings.append(emb)
 
-        # Compare sentences
+            embeddings1.extend(batch_embeddings)
+
+        # Process doc2 sentences in batches
+        for i in range(0, len(sentences2), BATCH_SIZE):
+            batch = sentences2[i : i + BATCH_SIZE]
+            batch_embeddings = []
+
+            for sent, page in batch:
+                stored_data = (
+                    vectorstore.get_sentence_embedding(sent, doc2_content["pdf_path"])
+                    if vectorstore
+                    else None
+                )
+
+                if stored_data is not None:
+                    emb = np.array(stored_data["embedding"])
+                else:
+                    emb = embedding_model.encode(sent)
+                    if vectorstore:
+                        vectorstore.store_sentence_embedding(
+                            sent, doc2_content["pdf_path"], emb, page, doc2_name
+                        )
+                batch_embeddings.append(emb)
+
+            embeddings2.extend(batch_embeddings)
+
+        # Compare sentences using matrix operations
         matches = []
-        for i, ((sent1, page1), emb1) in enumerate(zip(sentences1, embeddings1)):
-            for j, ((sent2, page2), emb2) in enumerate(zip(sentences2, embeddings2)):
-                # Ensure embeddings are numpy arrays and properly shaped
-                emb1_reshaped = np.array(emb1).reshape(1, -1)
-                emb2_reshaped = np.array(emb2).reshape(1, -1)
+        embeddings1_matrix = np.array([emb.reshape(1, -1) for emb in embeddings1])
+        embeddings2_matrix = np.array([emb.reshape(1, -1) for emb in embeddings2])
 
-                similarity = cosine_similarity(emb1_reshaped, emb2_reshaped)[0][0]
+        # Compute similarity matrix
+        similarity_matrix = cosine_similarity(
+            embeddings1_matrix.reshape(len(embeddings1), -1),
+            embeddings2_matrix.reshape(len(embeddings2), -1),
+        )
 
-                if similarity >= threshold:
-                    matches.append(
-                        {
-                            "doc1_sentence": sent1,
-                            "doc2_sentence": sent2,
-                            "similarity": similarity,
-                            "doc1_page": page1,
-                            "doc2_page": page2,
-                            "doc1_name": doc1_name,
-                            "doc2_name": doc2_name,
-                        }
-                    )
+        # Find matches above threshold
+        similar_pairs = np.where(similarity_matrix >= threshold)
+        for idx1, idx2 in zip(*similar_pairs):
+            sent1, page1 = sentences1[idx1]
+            sent2, page2 = sentences2[idx2]
+            similarity = similarity_matrix[idx1, idx2]
+
+            matches.append(
+                {
+                    "doc1_sentence": sent1,
+                    "doc2_sentence": sent2,
+                    "similarity": float(similarity),
+                    "doc1_page": page1,
+                    "doc2_page": page2,
+                    "doc1_name": doc1_name,
+                    "doc2_name": doc2_name,
+                }
+            )
 
         return matches
 
